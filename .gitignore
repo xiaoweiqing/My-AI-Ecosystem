@@ -1,0 +1,19 @@
+# 忽略存放所有API密钥和配置的.env文件
+.env
+
+# 忽略Python的缓存文件
+__pycache__/
+*.py[cod]
+
+# 忽略本地的ChromaDB向量数据库
+# 你的.env示例中路径是 ./My_AI_Ecosystem/chroma_db，这里直接忽略文件夹名
+chroma_db/
+
+# 忽略常见的Python虚拟环境文件夹
+venv/
+.venv/
+env/
+
+# 忽略IDE/编辑器的配置文件 (可选，但推荐)
+.vscode/
+.idea/

@@ -1,0 +1,239 @@
+# ==============================================================================
+#                 人才分析报告AI (Talent Report AI) v4.1
+#                    (Final Custom Fit Edition)
+# ==============================================================================
+# 版本说明:
+# - 【最终定制】代码现在100%精确匹配你截图中的Notion数据库列名。
+# - 【精准读取】只读取`候选人姓名`, `匹配度评分`, `评分理由`, `招聘状态`, `面试官反馈`这几列。
+# - 【稳定可靠】集成了之前所有版本的bug修复和优化。
+# - 【核心产出】生成一份包含深度文字洞察和清晰数据表格的Word(.docx)报告。
+# ==============================================================================
+
+import os
+import sys
+import re
+import pandas as pd
+from docx import Document
+from docx.shared import Inches, Pt
+from docx.oxml.ns import qn
+from datetime import datetime
+import google.generativeai as genai
+from notion_client import Client, APIResponseError
+from dotenv import load_dotenv
+import time
+import PyPDF2
+
+# --- 0. 准备工作 ---
+def setup_environment():
+    print("--- 启动准备工作 (v4.1 最终定制版) ---")
+    os.makedirs('output', exist_ok=True)
+    os.makedirs('resumes', exist_ok=True)
+    print("  - 输出与简历目录已确认。")
+
+# --- 1. Word报告生成器 ---
+def generate_word_report(narratives, stats, filename):
+    print("✍️ 正在组装Word(.docx)报告...")
+    try:
+        doc = Document()
+        doc.styles['Normal'].font.name = u'宋体'
+        doc.styles['Normal']._element.rPr.rFonts.set(qn('w:eastAsia'), u'宋体')
+        
+        doc.add_heading(narratives['title'], level=0)
+        p = doc.add_paragraph(); p.add_run(narratives['subtitle']).italic = True
+        p = doc.add_paragraph(); p.add_run(f"报告生成日期: {datetime.now().strftime('%Y-%m-%d')}").font.size = Pt(9)
+        doc.add_page_break()
+
+        def add_df_to_doc(df, title=""):
+            if title: doc.add_paragraph(title, style='Heading 3')
+            if df.empty:
+                doc.add_paragraph("  (无相关数据可生成此表格)")
+                doc.add_paragraph()
+                return
+            table = doc.add_table(rows=1, cols=len(df.columns)); table.style = 'Table Grid'
+            hdr_cells = table.rows[0].cells
+            for i, col_name in enumerate(df.columns): hdr_cells[i].text = str(col_name)
+            for _, row in df.iterrows():
+                row_cells = table.add_row().cells
+                for i, value in enumerate(row): row_cells[i].text = str(value)
+            doc.add_paragraph()
+
+        for chapter in narratives['chapters']:
+            doc.add_heading(chapter['title'], level=1)
+            p = doc.add_paragraph(str(chapter['content'])); p.style = doc.styles['Normal']
+            
+            if chapter['title'] == '内部数据深度洞察':
+                df_status = pd.DataFrame(list(stats.get('status_distribution', {}).items()), columns=['招聘状态', '候选人数量'])
+                add_df_to_doc(df_status, title="表1: 候选人招聘状态分布")
+                
+                df_skills = pd.DataFrame(list(stats.get('feedback_skills_distribution', {}).items()), columns=['技能', '提及次数'])
+                add_df_to_doc(df_skills, title="表2: 综合高频技能词")
+            
+            doc.add_paragraph()
+
+        doc.save(filename)
+        print(f"  - Word报告已成功保存！")
+    except Exception as e:
+        print(f"❌ 生成Word报告时发生严重错误: {e}")
+
+# --- 2. 初始化与配置加载 ---
+def initialize():
+    print("\n" + "="*70); print("🚀 启动人才分析报告AI引擎 (v4.1)...")
+    load_dotenv(); config = {"NOTION_TOKEN": os.getenv("NOTION_API_KEY"), "API_KEY": os.getenv("GEMINI_API_KEY"), "CANDIDATE_DB_ID": os.getenv("LLM_CANDIDATE_DB_ID")}
+    if not all(config.values()):
+        print("❌ 致命错误：关键配置缺失！"); sys.exit(1)
+    try:
+        notion = Client(auth=config["NOTION_TOKEN"]); genai.configure(api_key=config["API_KEY"])
+        gemini_model = genai.GenerativeModel('gemini-1.5-pro-latest'); print("✅ 初始化成功！"); return notion, gemini_model, config
+    except Exception as e:
+        print(f"❌ 初始化失败: {e}"); sys.exit(1)
+
+# --- 3. 数据读取模块 ---
+def read_resumes_from_folder(folder_path):
+    absolute_folder_path = os.path.abspath(folder_path)
+    print(f"📂 正在从以下路径读取简历: '{absolute_folder_path}'")
+    if not os.path.isdir(absolute_folder_path):
+        print(f"  - ❌ 错误: 简历文件夹路径不存在！"); return ""
+    files_in_folder = os.listdir(absolute_folder_path)
+    if not files_in_folder:
+        print("  - 🟡 警告: 简历文件夹是空的。"); return ""
+    resume_contents = []
+    for filename in files_in_folder:
+        file_path = os.path.join(absolute_folder_path, filename)
+        content = f"\n--- 简历来源: {filename} ---\n"
+        try:
+            if filename.lower().endswith('.pdf'):
+                with open(file_path, 'rb') as f:
+                    reader = PyPDF2.PdfReader(f)
+                    if reader.is_encrypted: print(f"  - 跳过加密的PDF: {filename}"); continue
+                    for page in reader.pages: content += page.extract_text() or ""
+            elif filename.lower().endswith('.docx'):
+                doc = Document(file_path);
+                for para in doc.paragraphs: content += para.text + '\n'
+            elif filename.lower().endswith('.txt'):
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f: content += f.read()
+            else: continue
+            resume_contents.append(content)
+        except Exception as e: print(f"  - ❌ 读取文件 {filename} 时出错: {e}")
+    print(f"  - 成功读取 {len(resume_contents)} 份简历。")
+    return "\n".join(resume_contents)
+
+def fetch_notion_data(notion, db_id):
+    print("\n" + "="*70); print("⏳ 正在从Notion拉取核心数据...")
+    all_pages, has_more, start_cursor = [], True, None
+    while has_more:
+        try:
+            response = notion.databases.query(database_id=db_id, start_cursor=start_cursor, page_size=100)
+            all_pages.extend(response.get("results", [])); has_more = response.get("has_more", False); start_cursor = response.get("next_cursor")
+        except APIResponseError as e:
+            if "Could not find database" in str(e): print(f"❌ 查询Notion出错: 找不到数据库。请检查 .env 的 LLM_CANDIDATE_DB_ID。")
+            elif "is not shared with the integration" in str(e): print(f"❌ 查询Notion出错: 数据库未分享给机器人。请为ID为'{db_id}'的数据库【添加连接】。")
+            else: print(f"❌ 查询Notion时出错: {e}")
+            return pd.DataFrame()
+    if not all_pages: print("🟡 未发现Notion候选人数据。请确认数据库ID正确且已分享给机器人。"); return pd.DataFrame()
+    
+    all_candidates = []
+    for page in all_pages:
+        props = page.get("properties", {})
+        # 【最终定制】完全匹配你截图中的列名
+        def get_prop(prop_name, prop_type):
+            data = props.get(prop_name)
+            if not data: return None
+            if prop_type == 'title': return data.get('title', [{}])[0].get('plain_text')
+            if prop_type == 'rich_text': return ''.join(p.get('plain_text', '') for p in data.get('rich_text', []))
+            if prop_type == 'multi_select': return [s['name'] for s in data.get('multi_select', [])]
+            if prop_type == 'number': return data.get('number')
+            return None
+            
+        all_candidates.append({
+            'name': get_prop("候选人姓名", "title"),
+            'status': get_prop("招聘状态", "multi_select"),
+            'feedback': get_prop("面试官反馈", "rich_text"),
+            'rating': get_prop("匹配度评分", "number"),
+            'reason': get_prop("评分理由", "rich_text")
+        })
+    df = pd.DataFrame(all_candidates).dropna(subset=['name'])
+    print(f"✅ Notion数据拉取完成！共处理 {len(df)} 条记录。"); return df
+
+# --- 4. AI分析模块 ---
+def ask_gemini(gemini_model, prompt, retries=2):
+    for i in range(retries):
+        try:
+            response = gemini_model.generate_content(prompt, request_options={"timeout": 180})
+            return response.text
+        except Exception as e: print(f"  - 警告: 调用AI失败: {e}. 重试..."); time.sleep(2)
+    return "AI 未能生成内容。"
+
+def generate_ai_narrative(gemini_model, jd_text, stats, resume_summary):
+    print("\n" + "="*70); print("🧠 正在调用Gemini进行双源数据深度分析...")
+    # 【更新】数据摘要现在包含更丰富的信息
+    data_summary = f"""
+    内部数据摘要:
+    - Notion数据库候选人总数: {stats['total_candidates']}
+    - 招聘状态分布: {stats.get('status_distribution', 'N/A')}
+    - 综合高频技能词 (来自评分理由、面试反馈和简历): {stats.get('feedback_skills_distribution', 'N/A')}
+    - 本地简历文件夹摘要 (仅显示部分用于上下文): {resume_summary[:3000]}...
+    """
+    chapters = [
+        {"title": "执行摘要", "prompt": f"作为AI人才战略顾问，请结合你对当前大模型人才市场的理解，并基于以下【Notion数据库】和【本地简历文件夹】的综合数据摘要，撰写一份详尽的执行摘要，篇幅不少于300字。\n\n{data_summary}"},
+        {"title": "人才市场宏观分析", "prompt": f"作为行业分析师，请单纯基于你庞大的知识库，分析当前市场上通用AI人才，特别是大模型算法工程师“贵在哪里”。请从技术壁垒、人才供需、行业应用价值等角度展开，写一段至少800字的深度分析。"},
+        {"title": "内部数据深度洞察", "prompt": f"现在，请聚焦于我提供的内部综合数据。深入解读这份数据摘要，特别是从面试反馈和评分理由中体现的技能点，以及招聘漏斗（状态分布），详细分析我们吸引的人才质量如何？\n\n{data_summary}"},
+        {"title": "战略行动建议", "prompt": f"综合以上所有分析，请为我们的招聘团队提出5条具体的、可立即执行的、详尽的战略建议，每条建议都需阐述其背后的逻辑和预期效果。\n\n{data_summary}"},
+    ]
+    narratives = {"title": "AI大模型工程师人才分析报告", "subtitle": "基于[Notion数据库+本地简历]的双源深度洞察", "chapters": []}
+    for chapter in chapters:
+        print(f"  - 正在生成章节: [{chapter['title']}]...")
+        content = ask_gemini(gemini_model, chapter['prompt'])
+        narratives['chapters'].append({"title": chapter['title'], "content": content})
+    print("✅ 所有报告章节已由AI生成！")
+    return narratives
+
+# --- 5. 主程序入口 ---
+if __name__ == "__main__":
+    setup_environment()
+    notion, gemini_model, config = initialize()
+    
+    resume_folder_path = 'resumes' 
+
+    df_notion_data = fetch_notion_data(notion, config["CANDIDATE_DB_ID"])
+    resumes_text = read_resumes_from_folder(resume_folder_path)
+
+    if df_notion_data.empty and not resumes_text:
+        print("\n❌ 致命错误: Notion和本地文件夹均无数据，无法生成报告。")
+    else:
+        print("\n" + "="*70); print("🔄 正在进行最终的量化分析...")
+        # 【更新】从更多列提取文本进行分析
+        all_text_for_analysis = ' '.join(df_notion_data['feedback'].dropna().astype(str)) + \
+                                ' '.join(df_notion_data['reason'].dropna().astype(str)) + \
+                                " " + resumes_text
+        
+        stats = {}
+        stats['total_candidates'] = len(df_notion_data)
+        
+        if 'status' in df_notion_data.columns and not df_notion_data['status'].dropna().empty:
+            status_flat = [s for sublist in df_notion_data['status'].dropna() for s in sublist]
+            stats['status_distribution'] = pd.Series(status_flat).value_counts().to_dict()
+        else:
+            stats['status_distribution'] = {}
+            
+        skills_to_track = ['Python', 'PyTorch', 'TensorFlow', 'Transformer', 'DeepSpeed', 'RLHF', 'CUDA', '昇腾', '金融', '微调', '量化', '工程化', '架构', 'NLP']
+        skill_counts = {skill: all_text_for_analysis.lower().count(skill.lower()) for skill in skills_to_track}
+        stats['feedback_skills_distribution'] = {k: v for k, v in sorted(skill_counts.items(), key=lambda item: item[1], reverse=True) if v > 0}
+        print("✅ 量化分析完成！")
+
+        try:
+            with open('jd_template.txt', 'r', encoding='utf-8') as f:
+                jd_text = f.read()
+        except FileNotFoundError:
+            print("❌ 错误: 'jd_template.txt' 文件未找到。"); sys.exit(1)
+            
+        narratives = generate_ai_narrative(gemini_model, jd_text, stats, resumes_text)
+        
+        if narratives:
+            base_filename = f"output/Talent_Analysis_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            docx_filename = f"{base_filename}.docx"
+            generate_word_report(narratives, stats, docx_filename)
+            
+            print(f"\n🎉🎉🎉 恭喜！最终报告已生成:")
+            print(f"   - Word版 (包含文字与表格): {docx_filename}")
+
+    print("\n" + "="*70); print("所有任务执行完毕...")
